@@ -10,22 +10,15 @@
 #include <fstream>
 #include <iomanip>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+#include "debugger.hpp"
+
 
 using namespace std;
-
-class debugger{
-	public:
-		debugger (string prog_name, pid_t pid)
-			: m_prog_name{move(prog_name)}, m_pid{pid} {}
-
-		void run();
-
-	private:
-		void handle_command(const string& line);
-		void continue_execution();
-		string m_prog_name;
-		pid_t m_pid;
-};
+using namespace f_dbg;
 
 void debugger::run(){
 	int wait_status;
@@ -67,6 +60,10 @@ void debugger::handle_command(const string& line){
 		cout << command << " is continue" <<endl;
 		continue_execution();
 	}
+	else if(is_prefix(command, "break")) {
+		string addr {args[1], 2};
+		set_breakpoint_at_address(stol(addr, 0, 16));
+	}
 	else{
 		cerr << "Unknown command\n";
 	}
@@ -78,6 +75,13 @@ void debugger::continue_execution(){
 	int wait_status;
 	auto options = 0;
 	waitpid(m_pid, &wait_status, options);
+}
+
+void debugger::set_breakpoint_at_address(intptr_t addr){
+	cout << "Set breakpoint at address 0x" << hex << addr << endl;
+	breakpoint bp {m_pid, addr};
+	bp.enable();
+	m_breakpoints[addr] = bp;
 }
 
 int main(int argc, char* argv[]){
@@ -92,13 +96,13 @@ int main(int argc, char* argv[]){
 
 	linenoise::LoadHistory(history_path);
 	linenoise::SetHistoryMaxLen(10);
-	string input;
-	linenoise::SaveHistory(history_path);
+	//linenoise::SaveHistory(history_path);
 
 	auto pid = fork();
 	if(pid == 0){
+		personality(ADDR_NO_RANDOMIZE);
+		//cout << "The child proces pid is: " << getpid() << endl;
 		ptrace(PTRACE_TRACEME, 0, nullptr, nullptr);
-		cout << "this is a child process" << endl;
 		execl(prog, prog, nullptr);
 	}
 	else if (pid >= 1){
@@ -106,16 +110,9 @@ int main(int argc, char* argv[]){
 		cout << "Started f_debugger process " << pid << endl;
 		debugger dbg{prog, pid};
 		dbg.run();
-		//while(true){
-			//auto quit = linenoise::Readline("f_dbg> ", input);
-			//if (quit){
-				//break;
-			//}
-			//cout << input << endl;
-			//linenoise::AddHistory(input.c_str());
-		//}
-		
 	}
+	linenoise::SaveHistory(history_path);
+
 	return 0;
 }
 
