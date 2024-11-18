@@ -14,7 +14,14 @@ namespace f_dbg {
 				: m_pid{pid}, m_addr{addr}, m_enabled{false}, m_saved_data{} {}
 
 			void enable(){
+				errno = 0;
 				auto data = ptrace(PTRACE_PEEKDATA, m_pid, m_addr, nullptr);
+				//if (errno != 0 ){
+					//cerr << "ptrace failed"<<endl;
+				//}
+				//else{
+					//cout << m_addr <<" " <<data <<endl;
+				//}
 				m_saved_data = static_cast<uint8_t>(data & 0xff);
 				uint64_t int3 = 0xcc;
 				uint64_t data_with_int3 = ((data & ~0xff) | int3);
@@ -23,6 +30,7 @@ namespace f_dbg {
 				m_enabled = true;
 			}
 			void disable(){
+				//cout << "disable this bp " << m_addr << endl;
 				auto data = ptrace(PTRACE_PEEKDATA, m_pid, m_addr, nullptr);
 				auto restored_data = ((data & ~0xff) | m_saved_data);
 				ptrace(PTRACE_POKEDATA, m_pid, m_addr, restored_data);

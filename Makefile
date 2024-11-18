@@ -3,7 +3,7 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -g
 
-f_dbg: f_dbg.cpp
+f_dbg: f_dbg.cpp debugger.hpp breakpoint.hpp register.hpp
 	$(CXX) $(CXXFLAGS) -o f_dbg f_dbg.cpp
 
 clean:
