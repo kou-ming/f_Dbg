@@ -2,3 +2,7 @@ history.txt
 f_dbg
 test.*
 test
+*.o
+debug_info.txt
+*.swp
+libelfin

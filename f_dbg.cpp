@@ -22,21 +22,10 @@
 using namespace std;
 using namespace f_dbg;
 
-//enum {
-	//R15, R14, R13, R12,
-	//RBP, RBX, R11, R10,
-	//R9, R8, RAX, RCX,
-	//RDX, RSI, RDI, ORIG_RAX,
-	//RIP, CS, EFLAGS, RSP,
-	//SS, FS_BASE, GS_BASE, DS,
-	//ES, FS, GS,
-	//REGS_CNT,
-//};
-
 void debugger::run(){
-	int wait_status;
-	auto options = 0;
-	waitpid(m_pid, &wait_status, options); //wait for traced process sent a SIGTRAP
+	wait_for_sig();
+	initialise_load_address();
+
 	string line;
 	while(true){
 		auto quit = linenoise::Readline("f_dbg> ", line);
@@ -47,6 +36,25 @@ void debugger::run(){
 		linenoise::AddHistory(line.c_str());
 	}
 }
+
+void debugger::initialise_load_address(){
+	//If this is a dynamic library
+	if(m_elf.get_hdr().type == elf::et::dyn){
+		ifstream map("/proc/" + to_string(m_pid) + "/maps");
+
+		//Read the first address from the file(map)
+		string addr;
+		getline(map, addr, '-');
+		cout << "addr: " << addr << endl;
+
+		m_load_address = std::stoll(addr, 0, 16);
+	}
+}
+
+uint64_t debugger::offset_load_address(uint64_t addr){
+	return addr - m_load_address;
+}
+
 
 bool debugger::get_reg(size_t idx, size_t* value){
 	struct user_regs_struct regs;
@@ -69,10 +77,6 @@ void debugger::target_sigtrap(siginfo_t& info){
 			cout << addr <<endl;
 			m_breakpoints[addr].disable();
 			m_breakpoints[addr].enable();
-			//m_breakpoints[addr].disable();
-
-			//ptrace(PTRACE_SINGLESTEP, m_pid, nullptr, nullptr);
-			//continue_execution();
 			ptrace(PTRACE_CONT, m_pid, nullptr, nullptr);
 			wait_for_sig();
 			//m_breakpoints[addr].enable();
@@ -83,25 +87,50 @@ void debugger::target_sigtrap(siginfo_t& info){
 
 }
 
+siginfo_t debugger::get_signal_info(){
+	siginfo_t info;
+	ptrace(PTRACE_GETSIGINFO, m_pid, nullptr, &info);
+	return info;
+}
+
 void debugger::wait_for_sig(){
 	int wait_status;
 	auto options = 0;
-	waitpid(m_pid, &wait_status, options);
+	waitpid(m_pid, &wait_status, options); //wait for traced process sent a SIGTRAP
+	
+	auto siginfo = get_signal_info();
 
-	//if(WIFSTOPPED(wait_status) && (WSTOPSIG(wait_status) == SIGTRAP)) {
-		//siginfo_t info;
-		//memset(&info, 0, sizeof(siginfo_t));
+	switch(siginfo.si_signo){
+		case SIGTRAP:
+			handle_sigtrap(siginfo);
+			break;
+		case SIGSEGV:
+			cout << "Yay, segfault. Reason: " << siginfo.si_code << endl;
+			break;
+		default:
+			cout << "Got signal " << strsignal(siginfo.si_signo) << endl;
+	}
+}
 
-		//ptrace(PTRACE_GETSIGINFO, m_pid, 0, &info);
-
-		//switch(info.si_signo){
-			//case SIGTRAP:
-				//target_sigtrap(info);
-				//break;
-			//default:
-				//break;
-		//}
-	//}
+void debugger::handle_sigtrap(siginfo_t info){
+	switch(info.si_code){
+		case SI_KERNEL:
+		case TRAP_BRKPT:
+		{
+			set_pc(get_pc() - 1);
+			cout << "Hit breakpoint at address 0x" << hex << get_pc() << endl;
+			auto offset_pc = offset_load_address(get_pc());
+			cout << offset_pc << endl;
+			auto line_entry = get_line_entry_from_pc(offset_pc);
+			print_source(line_entry->file->path, line_entry->line);
+			return;
+		}
+		case TRAP_TRACE:
+			return;
+		default:
+			cout << "Unknown SIGTRAP code " << info.si_code << endl;
+			return;
+	}
 }
 
 vector<string> split(const string& s, char delimiter){
@@ -161,15 +190,11 @@ void debugger::handle_command(const string& line){
 }
 
 void debugger::step_over_breakpoint(){
-	auto possible_breakpoint_addr = get_pc() - 1;
-
-	if(m_breakpoints.count(possible_breakpoint_addr)){
-		auto& bp = m_breakpoints[possible_breakpoint_addr];
+	//first face handle_sigtrap, so the addr already be minus 1
+	if(m_breakpoints.count(get_pc())){
+		auto& bp = m_breakpoints[get_pc()];
 
 		if(bp.is_enabled()){
-			auto previous_instruction_addr = possible_breakpoint_addr;
-			set_pc(previous_instruction_addr);
-
 			bp.disable();
 			ptrace(PTRACE_SINGLESTEP, m_pid, nullptr, nullptr);
 			wait_for_sig();
@@ -211,6 +236,67 @@ uint64_t debugger::get_pc(){
 
 void debugger::set_pc(uint64_t pc){
 	set_register_value(m_pid, reg::rip, pc);
+}
+
+dwarf::die debugger::get_function_from_pc(uint64_t pc){
+	for(auto &cu : m_dwarf.compilation_units()){
+		if(die_pc_range(cu.root()).contains(pc)){
+			for(const auto & die : cu.root()){
+				if(die.tag == dwarf::DW_TAG::subprogram){
+					if(die_pc_range(die).contains(pc)){
+						return die;
+					}
+				}
+			}
+		}
+	}
+
+	throw out_of_range{"Cannot find function"};
+}
+
+
+dwarf::line_table::iterator debugger::get_line_entry_from_pc(uint64_t pc){
+	for(auto &cu : m_dwarf.compilation_units()){
+		if(die_pc_range(cu.root()).contains(pc)){
+			auto &lt = cu.get_line_table();
+			auto it = lt.find_address(pc);
+			if(it == lt.end()){
+				throw out_of_range{"Cannot find line entry"};
+			}
+			else{
+				return it;
+			}
+		}
+	}
+
+	throw out_of_range{"Cannot find line entry"};
+}
+
+void debugger::print_source(const string& file_name, unsigned line, unsigned n_lines_context){
+	ifstream file {file_name};
+
+	auto start_line = line <= n_lines_context ? 1 : line - n_lines_context;
+	auto end_line = line + n_lines_context + (line < n_lines_context ? n_lines_context - line : 0) + 1;
+
+	char c{};
+	auto current_line = 1u;
+	while(current_line != start_line && file.get(c)){
+		if(c == '\n'){
+			++current_line;
+		}
+	}
+
+	cout << (current_line == line ? "> " : " ");
+
+	while(current_line <= end_line && file.get(c)){
+		cout << c;
+		if(c == '\n'){
+			++current_line;
+			cout << (current_line == line ? "> " : " ");
+		}
+	}
+
+	cout << endl;
 }
 
 int main(int argc, char* argv[]){
