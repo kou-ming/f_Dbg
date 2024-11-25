@@ -121,8 +121,10 @@ void debugger::handle_sigtrap(siginfo_t info){
 			cout << "Hit breakpoint at address 0x" << hex << get_pc() << endl;
 			auto offset_pc = offset_load_address(get_pc());
 			cout << offset_pc << endl;
-			auto line_entry = get_line_entry_from_pc(offset_pc);
-			print_source(line_entry->file->path, line_entry->line);
+			//auto line_entry = get_line_entry_from_pc(offset_pc);
+			auto line_entry = get_lentry_from_pc(offset_pc);
+			//cout << "line_entry: " << line_entry->line <<endl;
+			print_source(line_entry.path, line_entry.line);
 			return;
 		}
 		case TRAP_TRACE:
@@ -154,7 +156,7 @@ void debugger::handle_command(const string& line){
 	auto command = args[0];
 
 	if(is_prefix(command, "continue")){
-		cout << command << "continue 0.0" <<endl;
+		cout << "continue 0.0" <<endl;
 		continue_execution();
 	}
 	else if(is_prefix(command, "break")) {
@@ -184,8 +186,39 @@ void debugger::handle_command(const string& line){
 			write_memory(stol(addr, 0, 16), stol(val, 0, 16));
 		}
 	}
+	else if(is_prefix(command, "step")){
+		step_in();
+	}
+	else if(is_prefix(command, "next")){
+		step_over();
+	}
+	else if(is_prefix(command, "finish")){
+		step_out();
+	}
+	else if(is_prefix(command, "stepi")){
+		single_step_instruction_with_breakpoint_check();
+		auto offset_pc = offset_load_address(get_pc());
+		cout << offset_pc << endl;
+		//auto line_entry = get_line_entry_from_pc(get_offset_pc());
+		auto line_entry = get_lentry_from_pc(get_offset_pc());
+		print_source(line_entry.path, line_entry.line);
+	}
 	else{
 		cerr << "Unknown command\n";
+	}
+}
+
+void debugger::single_step_instruction(){
+	ptrace(PTRACE_SINGLESTEP, m_pid, nullptr, nullptr);
+	wait_for_sig();
+}
+
+void debugger::single_step_instruction_with_breakpoint_check(){
+	if(m_breakpoints.count(get_pc())){
+		step_over_breakpoint();
+	}
+	else{
+		single_step_instruction();
 	}
 }
 
@@ -243,8 +276,13 @@ dwarf::die debugger::get_function_from_pc(uint64_t pc){
 		if(die_pc_range(cu.root()).contains(pc)){
 			for(const auto & die : cu.root()){
 				if(die.tag == dwarf::DW_TAG::subprogram){
-					if(die_pc_range(die).contains(pc)){
-						return die;
+					if(die.has(dwarf::DW_AT::low_pc)){
+						//for (const auto &attr : die.attributes()){
+							//cout << to_string(attr.first) << ": " << to_string(attr.second) << '\n' ;
+						//}
+						if(die_pc_range(die).contains(pc)){
+							return die;
+						}
 					}
 				}
 			}
@@ -255,13 +293,68 @@ dwarf::die debugger::get_function_from_pc(uint64_t pc){
 }
 
 
-dwarf::line_table::iterator debugger::get_line_entry_from_pc(uint64_t pc){
+debugger::tmp_line_entry debugger::get_lentry_from_pc(uint64_t pc){
 	for(auto &cu : m_dwarf.compilation_units()){
 		if(die_pc_range(cu.root()).contains(pc)){
 			auto &lt = cu.get_line_table();
 			auto it = lt.find_address(pc);
 			if(it == lt.end()){
-				throw out_of_range{"Cannot find line entry"};
+				unsigned last_line;
+				string last_path;
+				uint64_t last_addr;
+				for (const auto &tt : lt){
+					last_line = tt.line;
+					last_path = tt.file->path;
+					last_addr = tt.address;
+					//cout << tt.address <<endl;
+					if(pc <= tt.address){
+						return tmp_line_entry(tt.line, tt.file->path, tt.address);
+					}
+				}
+				return tmp_line_entry(last_line, last_path, last_addr, true);
+				//throw out_of_range{"Cannot find line_entry"};
+			}
+			else{
+				return tmp_line_entry(it->line, it->file->path, it->address);
+			}
+		}
+	}
+
+	throw out_of_range{"Cannot find line entry"};
+}
+
+dwarf::line_table::iterator debugger::get_line_entry_from_pc(uint64_t pc){
+	//cout << "need to find pc is: " << pc <<endl;
+	for(auto &cu : m_dwarf.compilation_units()){
+		if(die_pc_range(cu.root()).contains(pc)){
+			auto &lt = cu.get_line_table();
+			auto it = lt.find_address(pc);
+			//cout << it->address <<endl;
+			cout << "find the line is : " << it->line <<endl;
+			//for (const auto kt = lt.end() ; kt != lt.begin() ; ++kt){
+				//cout << "addr is: " << kt->address <<endl;
+			//}
+			if(it == lt.end()){
+				//for (const kt = lt.end() ; kt != lt.begin() ; kt--){
+					//cout << "addr is: " << kt->address <<endl;
+				//}
+				for (const auto &tt : lt){
+					if(pc <= tt.address){
+						tmp_line_entry(tt.line, tt.file->path);
+						//return tt;
+					}
+					//cout << tt.address << endl;
+				}
+				//auto range = die_pc_range(cu.root());
+				//for (const auto &ran : range){
+					//cout << "Range: [" << ran.low << "," << ran.high << ")" << endl;
+				//}
+				//cout << range.entry.low;
+				//if (pc == range.high) {
+					//cout << "PC points to the end of the function range." << endl;
+					//return std::prev(it);
+				//}
+				throw out_of_range{"Cannot find line_entry"};
 			}
 			else{
 				return it;
@@ -274,6 +367,8 @@ dwarf::line_table::iterator debugger::get_line_entry_from_pc(uint64_t pc){
 
 void debugger::print_source(const string& file_name, unsigned line, unsigned n_lines_context){
 	ifstream file {file_name};
+	cout << "line: " << line << endl;
+	cout << file_name << endl;
 
 	auto start_line = line <= n_lines_context ? 1 : line - n_lines_context;
 	auto end_line = line + n_lines_context + (line < n_lines_context ? n_lines_context - line : 0) + 1;
@@ -297,6 +392,84 @@ void debugger::print_source(const string& file_name, unsigned line, unsigned n_l
 	}
 
 	cout << endl;
+}
+
+void debugger::remove_breakpoint(intptr_t addr){
+	if(m_breakpoints.at(addr).is_enabled()){
+		m_breakpoints.at(addr).disable();
+	}
+	m_breakpoints.erase(addr);
+}
+
+void debugger::step_out(){
+	auto frame_pointer = get_register_value(m_pid, reg::rbp);
+	auto return_address = read_memory(frame_pointer+8);
+	
+	bool should_remove_breakpoint = false;
+	if(!m_breakpoints.count(return_address)){
+		set_breakpoint_at_address(return_address);
+		should_remove_breakpoint = true;
+	}
+
+	continue_execution();
+
+	if(should_remove_breakpoint){
+		remove_breakpoint(return_address);
+	}
+}
+
+void debugger::step_in(){
+	auto line = get_lentry_from_pc(get_offset_pc()).line;
+	cout << "start pc" << get_offset_pc() << "line = " <<line<<endl;
+	while(get_lentry_from_pc(get_offset_pc()).line == line && get_lentry_from_pc(get_offset_pc()).this_is_end == false){
+		single_step_instruction_with_breakpoint_check();
+		cout << "step... next pc: " << get_offset_pc() <<endl;
+	}
+	cout << "now pc: " << get_offset_pc()<<endl;
+	auto line_entry = get_lentry_from_pc(get_offset_pc());
+	//print_source(line_entry->file->path, line_entry->line);
+	print_source(line_entry.path, line_entry.line);
+}
+
+uint64_t debugger::get_offset_pc(){
+	return offset_load_address(get_pc());
+}
+
+uint64_t debugger::offset_dwarf_address(uint64_t addr){
+	return addr + m_load_address;
+}
+
+void debugger::step_over(){
+	auto func = get_function_from_pc(get_offset_pc());
+	auto func_entry = at_low_pc(func);
+	auto func_end = at_high_pc(func);
+
+	auto line = get_line_entry_from_pc(func_entry);
+	auto start_line = get_line_entry_from_pc(get_offset_pc());
+	//auto line = get_lentry_from_pc(func_entry);
+	//auto start_line = get_lentry_from_pc(get_offset_pc());
+
+	vector<intptr_t> to_delete{};
+	
+	while(line -> address < func_end){
+		auto load_address = offset_dwarf_address(line->address);
+		if(line->address != start_line->address && !m_breakpoints.count(load_address)){
+			set_breakpoint_at_address(load_address);
+			to_delete.push_back(load_address);
+		}
+		++line;
+	}
+	auto frame_pointer = get_register_value(m_pid, reg::rbp);
+	auto return_address = read_memory(frame_pointer+8);
+	if(!m_breakpoints.count(return_address)){
+		set_breakpoint_at_address(return_address);
+		to_delete.push_back(return_address);
+	}
+
+	continue_execution();
+	for(auto addr : to_delete){
+		remove_breakpoint(addr);
+	}
 }
 
 int main(int argc, char* argv[]){

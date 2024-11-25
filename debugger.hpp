@@ -26,6 +26,7 @@ namespace f_dbg {
 	};
 	class debugger{
 		public:
+			class tmp_line_entry;
 			debugger (string prog_name, pid_t pid)
 				: m_prog_name{move(prog_name)}, m_pid{pid} {
 				auto fd = open(m_prog_name.c_str(), O_RDONLY);
@@ -43,6 +44,9 @@ namespace f_dbg {
 			void handle_command(const string& line);
 			void continue_execution();
 			void step_over_breakpoint();
+			void single_step_instruction();
+			void single_step_instruction_with_breakpoint_check();
+
 			void target_sigtrap(siginfo_t& info);
 			bool get_reg(size_t idx, size_t* value);
 			uint64_t read_memory(uint64_t address);
@@ -58,6 +62,14 @@ namespace f_dbg {
 			
 			auto get_function_from_pc(uint64_t pc) -> dwarf::die;
 			auto get_line_entry_from_pc(uint64_t pc) -> dwarf::line_table::iterator;	
+			auto get_lentry_from_pc(uint64_t pc) -> tmp_line_entry;
+
+			void step_out();
+			void step_in();
+			void remove_breakpoint(intptr_t addr);
+			uint64_t get_offset_pc();
+			uint64_t offset_dwarf_address(uint64_t addr);
+			void step_over();
 
 			string m_prog_name;
 			pid_t m_pid;
@@ -69,6 +81,16 @@ namespace f_dbg {
 			dwarf::dwarf m_dwarf;
 			elf::elf m_elf;
 	};
+	class debugger::tmp_line_entry{
+		public:
+			tmp_line_entry(unsigned _line, string _path, uint64_t _addr=0, bool _end=false)
+				: line{_line}, path{move(_path)}, address{_addr}, this_is_end{_end} {}
+			unsigned line;
+			string path;
+			uint64_t address;
+			bool this_is_end;
+	};
+
 }
 
 #endif
