@@ -6,3 +6,5 @@ test
 debug_info.txt
 *.swp
 libelfin
+*.txt
+step_test

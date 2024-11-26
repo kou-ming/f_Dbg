@@ -160,8 +160,17 @@ void debugger::handle_command(const string& line){
 		continue_execution();
 	}
 	else if(is_prefix(command, "break")) {
-		string addr {args[1], 2};
-		set_breakpoint_at_address(stol(addr, 0, 16));
+		if(args[1][0] == '0' && args[1][1] == 'x'){
+			string addr {args[1], 2};
+			set_breakpoint_at_address(stol(addr, 0, 16));
+		}
+		else if(args[1].find(':') != string::npos){
+			auto file_and_line = split(args[1], ':');
+			set_breakpoint_at_source_line(file_and_line[0], stoi(file_and_line[1]));
+		}
+		else{
+			set_breakpoint_at_function(args[1]);
+		}
 	}
 	else if(is_prefix(command, "register")){
 		if(is_prefix(args[1], "dump")){
@@ -194,6 +203,12 @@ void debugger::handle_command(const string& line){
 	}
 	else if(is_prefix(command, "finish")){
 		step_out();
+	}
+	else if(is_prefix(command, "symbol")){
+		auto syms = lookup_symbol(args[1]);
+		for(auto&& s : syms){
+			cout << s.name << ' ' << sym_to_string(s.type) << " 0x" << hex << s.addr << endl;
+		}
 	}
 	else if(is_prefix(command, "stepi")){
 		single_step_instruction_with_breakpoint_check();
@@ -321,6 +336,46 @@ debugger::tmp_line_entry debugger::get_lentry_from_pc(uint64_t pc){
 	}
 
 	throw out_of_range{"Cannot find line entry"};
+}
+
+void debugger::set_breakpoint_at_function(const string& name){
+	for(const auto& cu : m_dwarf.compilation_units()){
+		for(const auto& die : cu.root()) {
+			if (die.has(dwarf::DW_AT::name) && at_name(die) == name){
+				//for (const auto &attr : die.attributes()){
+					//cout << to_string(attr.first) << ": " << to_string(attr.second) << '\n' ;
+				//}
+				auto low_pc = at_low_pc(die);
+				auto entry = get_line_entry_from_pc(low_pc);
+				//cout << "m_load_address: " << m_load_address <<endl;
+				++entry;
+				//cout << entry->address << endl;
+				//cout << offset_dwarf_address(entry-> address) << endl;
+				set_breakpoint_at_address(offset_dwarf_address(entry-> address));
+			}
+		}
+	}
+}
+
+bool is_suffix(const string& s, const string& of){
+	if(s.size() > of.size()) return false;
+	auto diff = of.size() - s.size();
+	return equal(s.begin(), s.end(), of.begin() + diff);
+}
+
+void debugger::set_breakpoint_at_source_line(const string& file, unsigned line){
+	for(const auto& cu : m_dwarf.compilation_units()){
+		//cout << at_name(cu.root()) << endl;
+		if(is_suffix(file, at_name(cu.root()))){
+			const auto& lt = cu.get_line_table();
+			for(const auto& entry : lt){
+				if(entry.is_stmt && entry.line == line){
+					set_breakpoint_at_address(offset_dwarf_address(entry.address));
+					return;
+				}
+			}
+		}
+	}
 }
 
 dwarf::line_table::iterator debugger::get_line_entry_from_pc(uint64_t pc){
@@ -470,6 +525,32 @@ void debugger::step_over(){
 	for(auto addr : to_delete){
 		remove_breakpoint(addr);
 	}
+}
+
+symbol_type to_symbol_type(elf::stt sym){
+	switch(sym){
+		case elf::stt::notype: return symbol_type::notype;
+		case elf::stt::object: return symbol_type::object;
+		case elf::stt::func: return symbol_type::func;
+		case elf::stt::section: return symbol_type::section;
+		case elf::stt::file: return symbol_type::file;
+		default: return symbol_type::notype;
+	}
+}
+
+vector<symbol> debugger::lookup_symbol(const string& name){
+	vector<symbol> syms;
+	for(auto &sec : m_elf.sections()){
+		if(sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym)
+			continue;
+		for(auto sym : sec.as_symtab()){
+			if(sym.get_name() == name){
+				auto &d = sym.get_data();
+				syms.push_back(symbol{to_symbol_type(d.type()), sym.get_name(), d.value});
+			}
+		}
+	}
+	return syms;
 }
 
 int main(int argc, char* argv[]){

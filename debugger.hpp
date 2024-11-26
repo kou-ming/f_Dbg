@@ -6,6 +6,7 @@
 #include <string>
 #include <linux/types.h>
 #include <unordered_map>
+#include <vector>
 
 #include "breakpoint.hpp"
 #include <libelfin/dwarf/dwarf++.hh>
@@ -14,6 +15,30 @@
 using namespace std;
 
 namespace f_dbg {
+	enum class symbol_type {
+		notype,
+		object,
+		func,
+		section,
+		file,
+	};
+
+	string sym_to_string(symbol_type st){
+		switch(st){
+			case symbol_type::notype: return "notype";
+			case symbol_type::object: return "object";
+			case symbol_type::func: return "func";
+			case symbol_type::section: return "section";
+			case symbol_type::file: return "file";
+			default: return "notype";
+		}
+	}
+
+	struct symbol{
+		symbol_type type;
+		string name;
+		uintptr_t addr;
+	};
 	enum {
 		R15, R14, R13, R12,
 		RBP, RBX, R11, R10,
@@ -70,6 +95,11 @@ namespace f_dbg {
 			uint64_t get_offset_pc();
 			uint64_t offset_dwarf_address(uint64_t addr);
 			void step_over();
+
+			void set_breakpoint_at_function(const string& name);
+			void set_breakpoint_at_source_line(const string& file, unsigned line);
+
+			auto lookup_symbol(const string& name) -> vector<symbol>;
 
 			string m_prog_name;
 			pid_t m_pid;
