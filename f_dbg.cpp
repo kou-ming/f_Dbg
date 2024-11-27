@@ -52,6 +52,7 @@ void debugger::initialise_load_address(){
 }
 
 uint64_t debugger::offset_load_address(uint64_t addr){
+	//cout << addr - m_load_address;
 	return addr - m_load_address;
 }
 
@@ -209,6 +210,9 @@ void debugger::handle_command(const string& line){
 		for(auto&& s : syms){
 			cout << s.name << ' ' << sym_to_string(s.type) << " 0x" << hex << s.addr << endl;
 		}
+	}
+	else if(is_prefix(command, "backtrace")){
+		print_backtrace();
 	}
 	else if(is_prefix(command, "stepi")){
 		single_step_instruction_with_breakpoint_check();
@@ -385,7 +389,7 @@ dwarf::line_table::iterator debugger::get_line_entry_from_pc(uint64_t pc){
 			auto &lt = cu.get_line_table();
 			auto it = lt.find_address(pc);
 			//cout << it->address <<endl;
-			cout << "find the line is : " << it->line <<endl;
+			//cout << "find the line is : " << it->line <<endl;
 			//for (const auto kt = lt.end() ; kt != lt.begin() ; ++kt){
 				//cout << "addr is: " << kt->address <<endl;
 			//}
@@ -475,12 +479,12 @@ void debugger::step_out(){
 
 void debugger::step_in(){
 	auto line = get_lentry_from_pc(get_offset_pc()).line;
-	cout << "start pc" << get_offset_pc() << "line = " <<line<<endl;
+	//cout << "start pc" << get_offset_pc() << "line = " <<line<<endl;
 	while(get_lentry_from_pc(get_offset_pc()).line == line && get_lentry_from_pc(get_offset_pc()).this_is_end == false){
 		single_step_instruction_with_breakpoint_check();
-		cout << "step... next pc: " << get_offset_pc() <<endl;
+		//cout << "step... next pc: " << get_offset_pc() <<endl;
 	}
-	cout << "now pc: " << get_offset_pc()<<endl;
+	//cout << "now pc: " << get_offset_pc()<<endl;
 	auto line_entry = get_lentry_from_pc(get_offset_pc());
 	//print_source(line_entry->file->path, line_entry->line);
 	print_source(line_entry.path, line_entry.line);
@@ -551,6 +555,28 @@ vector<symbol> debugger::lookup_symbol(const string& name){
 		}
 	}
 	return syms;
+}
+
+void debugger::print_backtrace(){
+	auto output_frame = [frame_number = 0] (auto&& func) mutable {
+		cout << "frame #" << frame_number++ << ": 0x" << dwarf::at_low_pc(func) << " " << dwarf::at_name(func) << endl;
+	};
+
+	auto current_func = get_function_from_pc(get_offset_pc());
+	//cout << get_offset_pc() << endl;
+	output_frame(current_func);
+
+	auto frame_pointer = get_register_value(m_pid, reg::rbp);
+	//cout << "get rbp" <<endl;
+	auto return_address = read_memory(frame_pointer+8);
+	//cout << "get return address: " << return_address << endl;
+
+	while(dwarf::at_name(current_func) != "main"){
+		current_func = get_function_from_pc(offset_load_address(return_address));
+		output_frame(current_func);
+		frame_pointer = read_memory(frame_pointer);
+		return_address = read_memory(frame_pointer+8);
+	}
 }
 
 int main(int argc, char* argv[]){

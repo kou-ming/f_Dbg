@@ -101,6 +101,8 @@ namespace f_dbg {
 
 			auto lookup_symbol(const string& name) -> vector<symbol>;
 
+			void print_backtrace();
+
 			string m_prog_name;
 			pid_t m_pid;
 			uint64_t m_load_address = 0;
